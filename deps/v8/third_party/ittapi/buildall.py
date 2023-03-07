@@ -11,12 +11,11 @@ import sys
 import shutil
 import fnmatch
 import subprocess
-import shlex
 
 
 def run_shell(cmd):
     print("\n>>", cmd)
-    os.system(shlex.quote(cmd))
+    os.system(cmd)
 
 
 if sys.platform == 'win32':
@@ -105,4 +104,65 @@ def main():
     parser.add_argument("-d", "--debug", help="specify debug build configuration (release by default)", action="store_true")
     parser.add_argument("-c", "--clean", help="delete any intermediate and output files", action="store_true")
     parser.add_argument("-v", "--verbose", help="enable verbose output from build process", action="store_true")
-    parser.add_argument("-pt", "--ptmark", help="enable anomaly detection support", 
+    parser.add_argument("-pt", "--ptmark", help="enable anomaly detection support", action="store_true")
+    parser.add_argument("--force_bits", choices=["32", "64"], help="specify bit version for the target")
+    if sys.platform == 'win32' and vs_versions:
+        parser.add_argument("--vs", help="specify visual studio version {default}", choices=vs_versions, default=vs_versions[0])
+    args = parser.parse_args()
+
+    if args.force_bits:
+        target_bits = [args.force_bits]
+    else:
+        target_bits = ['64']
+        if (sys.platform != 'darwin'):  # on MAC OSX we produce FAT library including both 32 and 64 bits
+            target_bits.append('32')
+
+    print("target_bits", target_bits)
+    work_dir = os.getcwd()
+    if args.clean:
+        bin_dir = os.path.join(work_dir, 'bin')
+        if os.path.exists(bin_dir):
+            shutil.rmtree(bin_dir)
+    for bits in target_bits:
+        work_folder = os.path.join(work_dir, "build_" + (sys.platform.replace('32', "")), bits)
+        already_there = os.path.exists(work_folder)
+        if already_there and args.clean:
+            shutil.rmtree(work_folder)
+            already_there = False
+        if not already_there:
+            os.makedirs(work_folder)
+        print("work_folder: ", work_folder)
+        os.chdir(work_folder)
+        if args.clean:
+            continue
+
+        cmake = detect_cmake()
+        if not cmake:
+            print("Error: cmake is not found")
+            return
+
+        if sys.platform == 'win32':
+            if vs_versions:
+                generator = ('Visual Studio %s' % args.vs) + (' Win64' if bits == '64' else '')
+            else:
+                generator = 'Ninja'
+        else:
+            generator = 'Unix Makefiles'
+        run_shell('%s "%s" -G"%s" %s' % (cmake, work_dir, generator, " ".join([
+            ("-DFORCE_32=ON" if bits == '32' else ""),
+            ("-DCMAKE_BUILD_TYPE=Debug" if args.debug else ""),
+            ('-DCMAKE_VERBOSE_MAKEFILE:BOOL=ON' if args.verbose else ''),
+            ("-DITT_API_IPT_SUPPORT=1" if args.ptmark else "")
+        ])))
+        if sys.platform == 'win32':
+            target_project = 'ALL_BUILD'
+            run_shell('%s --build . --config %s --target %s' % (cmake, ('Debug' if args.debug else 'Release'), target_project))
+        else:
+            import glob
+            run_shell('%s --build . --config %s' % (cmake, ('Debug' if args.debug else 'Release')))
+            if ('linux' in sys.platform and bits == '64'):
+                continue
+            run_shell('%s --build . --config %s --target' % (cmake, ('Debug' if args.debug else 'Release')))
+
+if __name__== "__main__":
+    main()
